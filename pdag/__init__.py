@@ -5,6 +5,7 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+
 class Node:
     def __init__(self, func: callable, *args, node_alias: str | None = None, **kwargs):
         self.func = func
@@ -28,12 +29,14 @@ class Node:
     def __str__(self):
         return self.alias or self.__repr__()
 
+
 class DAG:
     def __init__(self):
-        self.node_input_edges = defaultdict(set)
+        self.output_edges = defaultdict(set)
+        self.input_edges = defaultdict(set)
 
     def __repr__(self):
-        return str({str(k): [str(n) for n in v] for k, v in self.node_input_edges.items()})
+        return str({str(k): [str(n) for n in v] for k, v in self.output_edges.items()})
 
     def add_edge(self, from_: Node, to_: Node, param: str | None = None):
         if self._edge_exists(from_, to_):
@@ -41,43 +44,67 @@ class DAG:
             return
 
         if self._edge_creates_cycle(from_, to_):
+            self.remove_edge(from_, to_)
             raise ValueError("This creates a cycle.")
 
         if not _param_is_valid(to_.func, param):
-            raise ValueError(
-                f"{param} is an invalid parameter for {to_.func.__name__}"
-            )
+            raise ValueError(f"{param} is an invalid parameter for {to_.func.__name__}")
 
         self._add_edge_unsafe(from_, to_, param)
 
-
     def _edge_exists(self, from_: Node, to_: Node) -> bool:
-        return from_ in self.node_input_edges[to_]
+        return to_ in self.output_edges[from_]
 
     def _add_edge_unsafe(self, from_: Node, to_: Node, param: str | None = None):
         """If cycle and param checks aren't done, this is dangerous to do."""
-        self.node_input_edges[to_].add(from_)
-        if from_ not in self.node_input_edges:
-            self.node_input_edges[from_] = set()
-        if param is not None:
-            to_.kwargs[param] = from_._result
+        self.output_edges[from_].add(to_)
+        self.input_edges[to_].add(from_)
+        if to_ not in self.output_edges:
+            self.output_edges[to_] = set()
+        if from_ not in self.input_edges:
+            self.input_edges[from_] = set()
 
-    def _dfs(self, root: Node):
-        stack = [root]
-        visited = set()
-        while stack:
-            node = stack.pop()
-            yield node
-                
+        # TODO figure out param mapping. Shouldn't modify Node at all.
+
+    def remove_edge(self, from_: Node, to_: Node):
+        if not self._edge_exists(from_, to_):
+            logger.info("Can't remove edge as it doesn't exist.")
+            return
+
+        if not self._is_leaf_node(to_):
+            raise ValueError("Can't remove a non-leaf node.")
+
+        self.output_edges[from_].remove(to_)
+        self.input_edges[to_].remove(from_)
+        self._remove_node_if_disconnected(to_)
+        self._remove_node_if_disconnected(from_)
+
+    def _remove_node_if_disconnected(self, node: Node):
+        if self._disconnected_node(node):
+            self.input_edges.pop(node)
+            self.output_edges.pop(node)
+
+    def _disconnected_node(self, node: Node) -> bool:
+        return len(self.input_edges[node]) == 0 and len(self.output_edges[node]) == 0
+
+    def _is_leaf_node(self, node: Node):
+        return len(self.output_edges[node]) == 0
+
     def _edge_creates_cycle(self, from_: Node, to_: Node) -> bool:
-        # Should only occur with initial inserts of nodes and immediately stop.
-        if from_ not in self.node_input_edges or to_ not in self.node_input_edges:
+        visited = set()
+
+        def dfs(node: Node) -> bool:
+            visited.add(node)
+            for ancestor in self.input_edges[node]:
+                if ancestor == to_:
+                    return True
+                if ancestor not in visited:
+                    if dfs(ancestor):
+                        return True
             return False
-        if to_ in self.node_input_edges[from_]:
-            return True
-        for ancestor in self.node_input_edges[from_]:
-            if self._edge_creates_cycle(ancestor, to_):
-                return True
+
+        return dfs(from_)
+
 
 def _param_is_valid(func: callable, param: str) -> bool:
     signature = inspect.signature(func)
