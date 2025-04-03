@@ -1,21 +1,22 @@
-from typing import NamedTuple
+from typing import NamedTuple, Callable, ParamSpec, TypeVar
 import inspect
 import logging
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
-
+P = ParamSpec('P')
+R = TypeVar('R')
 
 class Node:
-    def __init__(self, func: callable, *args, node_alias: str | None = None, **kwargs):
+    def __init__(self, func: Callable[P, R], node_alias: str | None = None, *args: P.args, **kwargs: P.kwargs):
         self.func = func
         self.alias = node_alias
         self.args = args
         self.kwargs = kwargs
         self._executed = False
-        self._result = None
+        self._result: R | None = None
 
-    def execute(self):
+    def execute(self) -> R:
         if self._executed:
             return self._result
         self._result = self.func(*self.args, **self.kwargs)
@@ -47,7 +48,7 @@ class DAG:
             self.remove_edge(from_, to_)
             raise ValueError("This creates a cycle.")
 
-        if not _param_is_valid(to_.func, param):
+        if param is not None and not _param_is_valid(to_.func, param):
             raise ValueError(f"{param} is an invalid parameter for {to_.func.__name__}")
 
         self._add_edge_unsafe(from_, to_, param)
@@ -106,6 +107,6 @@ class DAG:
         return dfs(from_)
 
 
-def _param_is_valid(func: callable, param: str) -> bool:
+def _param_is_valid(func: Callable, param: str) -> bool:
     signature = inspect.signature(func)
     return param in signature.parameters
