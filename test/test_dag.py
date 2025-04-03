@@ -79,3 +79,18 @@ def test_param_is_valid():
 
     assert pdag._param_is_valid(func1, "x")
     assert not pdag._param_is_valid(func1, "y")
+
+
+def test_execute():
+    n1 = pdag.Node(add, 1, y=1)
+    n1.alias = "1"
+    n2 = pdag.Node(add, y=2)
+    n2.alias = "2"
+    n3 = pdag.Node(add)
+    n3.alias = "3"
+    dag = pdag.DAG()
+    dag.add_edge(n1, n2, "x")
+    dag.add_edge(n2, n3, "x")
+    dag.add_edge(n1, n3, "y")
+    outputs = dag.execute()
+    print(outputs)

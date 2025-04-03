@@ -1,7 +1,7 @@
 from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic
 import inspect
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 P = ParamSpec("P")
@@ -21,16 +21,15 @@ class Node(Generic[R]):
         return self.func(*self.args, **kwargs)
 
     def __repr__(self):
-        rep = ", ".join(self.args + tuple((f"{k}={v}" for k, v in self.kwargs.items())))
-        return f"{self.func.__name__}({rep})"
+        return self.alias or self.__str__()
 
     def __str__(self):
-        return self.alias or self.__repr__()
+        rep = ", ".join(self.args + tuple((f"{k}={v}" for k, v in self.kwargs.items())))
+        return f"{self.func.__name__}({rep})"
 
 
 class Status(Generic[R], NamedTuple):
     errored: bool
-    executed: bool
     output: R | None
 
 
@@ -39,7 +38,7 @@ class DAG:
         self.output_edges = defaultdict(set)
         self.input_edges = defaultdict(set)
         self.node_inputs = defaultdict(dict)
-        self.outputs = defaultdict(Status)
+        self.node_outputs = defaultdict(Status)
 
     def __repr__(self):
         return str({str(k): [str(n) for n in v] for k, v in self.output_edges.items()})
@@ -113,6 +112,29 @@ class DAG:
             return False
 
         return dfs(from_)
+
+        self.node_inputs = defaultdict(dict)
+        self.node_outputs = defaultdict(Status)
+
+    def execute(self) -> dict[Node, Status]:
+        in_degree = defaultdict(int)
+        for node in self.input_edges:
+            in_degree[node] = len(self.input_edges[node])
+
+        queue = deque([node for node, degree in in_degree.items() if degree == 0])
+        while queue:
+            node = queue.popleft()
+            kwargs = {}
+            for param, ancestor in self.node_inputs[node].items():
+                kwargs[param] = self.node_outputs[ancestor].output
+            res = node.execute(**kwargs)
+            self.node_outputs[node] = Status(errored=False, output=res)
+            for dependent in self.output_edges[node]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+
+        return self.node_outputs
 
 
 def _param_is_valid(func: Callable, param: str) -> bool:
