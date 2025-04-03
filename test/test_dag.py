@@ -4,7 +4,7 @@ import pytest
 import pdag
 
 
-def add(x, y):
+def add(x: int, y: int) -> int:
     return x + y
 
 
@@ -12,14 +12,13 @@ def test_create_node():
     n1 = pdag.Node(add, 1, y=2)
     res = n1.execute()
     assert res == 3
-    assert n1._executed
-    assert n1._result == 3
 
     n2 = pdag.Node(functools.partial(add, 1, 2))
     res = n2.execute()
     assert res == 3
-    assert n2._executed
-    assert n2._result == 3
+
+    with pytest.raises(TypeError):
+        pdag.Node(add, 1, y=2, z=4)
 
 
 def test_remove_edge(caplog):
@@ -38,6 +37,7 @@ def test_remove_edge(caplog):
     dag.remove_edge(n1, n2)
     assert len(dag.input_edges) == 0
     assert len(dag.output_edges) == 0
+    assert len(dag.node_inputs) == 0
 
     dag.add_edge(n1, n2, "x")
     dag.add_edge(n2, n3, "x")
@@ -58,9 +58,12 @@ def test_add_edge(caplog):
 
 
 def test_edge_creates_cycle():
-    n1 = pdag.Node(add, y=3, node_alias="n1")
-    n2 = pdag.Node(add, y=3, node_alias="n2")
-    n3 = pdag.Node(add, y=3, node_alias="n3")
+    n1 = pdag.Node(add, y=3)
+    n1.node_alias = "n1"
+    n2 = pdag.Node(add, y=3)
+    n2.node_alias = "n2"
+    n3 = pdag.Node(add, y=3)
+    n2.node_alias = "n3"
     dag = pdag.DAG()
     dag.add_edge(n1, n2, "x")
     with pytest.raises(ValueError):
@@ -68,7 +71,6 @@ def test_edge_creates_cycle():
     dag.add_edge(n2, n3, "x")
     with pytest.raises(ValueError):
         dag.add_edge(n3, n1, "x")
-    print(dag)
 
 
 def test_param_is_valid():

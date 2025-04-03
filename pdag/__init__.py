@@ -1,27 +1,24 @@
-from typing import NamedTuple, Callable, ParamSpec, TypeVar
+from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic
 import inspect
 import logging
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
-P = ParamSpec('P')
-R = TypeVar('R')
+P = ParamSpec("P")
+R = TypeVar("R")
 
-class Node:
-    def __init__(self, func: Callable[P, R], node_alias: str | None = None, *args: P.args, **kwargs: P.kwargs):
+
+class Node(Generic[R]):
+    def __init__(self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs):
+        _check_signature(func, args, kwargs)
         self.func = func
-        self.alias = node_alias
+        self.alias: str | None = None
         self.args = args
         self.kwargs = kwargs
-        self._executed = False
-        self._result: R | None = None
 
-    def execute(self) -> R:
-        if self._executed:
-            return self._result
-        self._result = self.func(*self.args, **self.kwargs)
-        self._executed = True
-        return self._result
+    def execute(self, **kwargs) -> R:
+        kwargs = {**self.kwargs, **kwargs}
+        return self.func(*self.args, **kwargs)
 
     def __repr__(self):
         rep = ", ".join(self.args + tuple((f"{k}={v}" for k, v in self.kwargs.items())))
@@ -31,10 +28,18 @@ class Node:
         return self.alias or self.__repr__()
 
 
+class Status(Generic[R], NamedTuple):
+    errored: bool
+    executed: bool
+    output: R | None
+
+
 class DAG:
     def __init__(self):
         self.output_edges = defaultdict(set)
         self.input_edges = defaultdict(set)
+        self.node_inputs = defaultdict(dict)
+        self.outputs = defaultdict(Status)
 
     def __repr__(self):
         return str({str(k): [str(n) for n in v] for k, v in self.output_edges.items()})
@@ -65,7 +70,9 @@ class DAG:
         if from_ not in self.input_edges:
             self.input_edges[from_] = set()
 
-        # TODO figure out param mapping. Shouldn't modify Node at all.
+        if param in self.node_inputs[to_]:
+            logger.warning(f"%s already in %s. Overwriting.", param, to_)
+        self.node_inputs[to_][param] = from_
 
     def remove_edge(self, from_: Node, to_: Node):
         if not self._edge_exists(from_, to_):
@@ -82,8 +89,9 @@ class DAG:
 
     def _remove_node_if_disconnected(self, node: Node):
         if self._disconnected_node(node):
-            self.input_edges.pop(node)
-            self.output_edges.pop(node)
+            self.input_edges.pop(node, None)
+            self.output_edges.pop(node, None)
+            self.node_inputs.pop(node, None)
 
     def _disconnected_node(self, node: Node) -> bool:
         return len(self.input_edges[node]) == 0 and len(self.output_edges[node]) == 0
@@ -110,3 +118,11 @@ class DAG:
 def _param_is_valid(func: Callable, param: str) -> bool:
     signature = inspect.signature(func)
     return param in signature.parameters
+
+
+def _check_signature(func: Callable, args, kwargs):
+    signature = inspect.signature(func)
+    try:
+        signature.bind_partial(*args, **kwargs)
+    except TypeError as e:
+        raise TypeError(f"Invalid arguments for {func.__name__}: {e}")
