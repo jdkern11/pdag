@@ -1,4 +1,5 @@
 from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic
+import networkx
 import inspect
 import logging
 from collections import defaultdict, deque
@@ -9,21 +10,22 @@ R = TypeVar("R")
 
 
 class Node(Generic[R]):
-    def __init__(self, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs):
+    def __init__(self, alias: str, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs):
         _check_signature(func, args, kwargs)
+        self.alias: str = alias
         self.func = func
-        self.alias: str | None = None
         self.args = args
         self.kwargs = kwargs
+        self.__signature__ = _get_partial_signature(func, *args, **kwargs)
 
-    def execute(self, **kwargs) -> R:
+    def __call__(self, **kwargs) -> R:
         kwargs = {**self.kwargs, **kwargs}
         return self.func(*self.args, **kwargs)
 
     def __repr__(self):
-        return self.alias or self.__str__()
+        return self.alias
 
-    def __str__(self):
+    def display(self) -> str:
         rep = ", ".join(self.args + tuple((f"{k}={v}" for k, v in self.kwargs.items())))
         return f"{self.func.__name__}({rep})"
 
@@ -35,21 +37,32 @@ class Status(Generic[R], NamedTuple):
 
 class DAG:
     def __init__(self):
-        self.output_edges = defaultdict(set)
-        self.input_edges = defaultdict(set)
-        self.node_inputs = defaultdict(dict)
-        self.node_outputs = defaultdict(Status)
+        self.graph = nx.DiGraph()
+        self.nodes: dict[str, Node] = {}
 
     def __repr__(self):
         return str({str(k): [str(n) for n in v] for k, v in self.output_edges.items()})
 
     def add_edge(self, from_: Node, to_: Node, param: str | None = None):
+        """Add edge from node `from_` to node `to_`, filling param.
+
+        Args:
+            from_: Parent node.
+            to_: Child node.
+            param: Input parameter for the `to_` node.
+
+        Raises:
+            ValueError if a node's alias is the same as anothers in the graph,
+            if adding an edge creates a cycle, or if an input parameter is invalid
+            for the `to_` node.
+        """
+        self._validate_alias(from_)
+        self._validate_alias(to_)
         if self._edge_exists(from_, to_):
             logger.info("Edge already added.")
             return
 
         if self._edge_creates_cycle(from_, to_):
-            self.remove_edge(from_, to_)
             raise ValueError("This creates a cycle.")
 
         if param is not None and not _param_is_valid(to_.func, param):
@@ -57,8 +70,15 @@ class DAG:
 
         self._add_edge_unsafe(from_, to_, param)
 
+    def _validate_alias(self, node: Node):
+        """Raises value error if node alias would overwrite another node"""
+        a = node.alias
+        if a in self.nodes and id(self.nodes[a]) != id(node):
+            raise ValueError(f"Alias of {node.display()} overwrites node {self.nodes[a].display()} in the graph")
+
+
     def _edge_exists(self, from_: Node, to_: Node) -> bool:
-        return to_ in self.output_edges[from_]
+        return self.graph.has_edge(from_, to_)
 
     def _add_edge_unsafe(self, from_: Node, to_: Node, param: str | None = None):
         """If cycle and param checks aren't done, this is dangerous to do."""
@@ -99,22 +119,9 @@ class DAG:
         return len(self.output_edges[node]) == 0
 
     def _edge_creates_cycle(self, from_: Node, to_: Node) -> bool:
-        visited = set()
-
-        def dfs(node: Node) -> bool:
-            visited.add(node)
-            for ancestor in self.input_edges[node]:
-                if ancestor == to_:
-                    return True
-                if ancestor not in visited:
-                    if dfs(ancestor):
-                        return True
+        if self.to_ not in self.nodes:
             return False
-
-        return dfs(from_)
-
-        self.node_inputs = defaultdict(dict)
-        self.node_outputs = defaultdict(Status)
+        return to_ in nx.ancestors(self.graph, from_)
 
     def execute(self) -> dict[Node, Status]:
         in_degree = defaultdict(int)
@@ -127,7 +134,7 @@ class DAG:
             kwargs = {}
             for param, ancestor in self.node_inputs[node].items():
                 kwargs[param] = self.node_outputs[ancestor].output
-            res = node.execute(**kwargs)
+            res = node(**kwargs)
             self.node_outputs[node] = Status(errored=False, output=res)
             for dependent in self.output_edges[node]:
                 in_degree[dependent] -= 1
@@ -148,3 +155,15 @@ def _check_signature(func: Callable, args, kwargs):
         signature.bind_partial(*args, **kwargs)
     except TypeError as e:
         raise TypeError(f"Invalid arguments for {func.__name__}: {e}")
+
+
+def _get_partial_signature(func, *args, **kwargs) -> inspect.Signature:
+        signature = inspect.signature(func)
+        bound_signature = signature.bind_partial(*args, **kwargs)
+        bound_signature.apply_defaults()
+        remaining_params = [
+            param for param in signature.parameters.values()
+            if param.name not in bound_signature.arguments
+        ]
+        return inspect.Signature(remaining_params)
+

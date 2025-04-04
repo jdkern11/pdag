@@ -9,23 +9,23 @@ def add(x: int, y: int) -> int:
 
 
 def test_create_node():
-    n1 = pdag.Node(add, 1, y=2)
-    res = n1.execute()
+    n1 = pdag.Node('n1', add, 1, y=2)
+    res = n1()
     assert res == 3
 
-    n2 = pdag.Node(functools.partial(add, 1, 2))
-    res = n2.execute()
+    n2 = pdag.Node('n2', functools.partial(add, 1, 2))
+    res = n2()
     assert res == 3
 
     with pytest.raises(TypeError):
-        pdag.Node(add, 1, y=2, z=4)
+        pdag.Node('err', add, 1, y=2, z=4)
 
 
 def test_remove_edge(caplog):
     caplog.set_level(logging.INFO)
-    n1 = pdag.Node(lambda: 1)
-    n2 = pdag.Node(add, y=3)
-    n3 = pdag.Node(add, y=3)
+    n1 = pdag.Node('n1', lambda: 1)
+    n2 = pdag.Node('n2', add, y=3)
+    n3 = pdag.Node('n3', add, y=3)
     dag = pdag.DAG()
     dag.remove_edge(n1, n2)
     assert "Can't remove edge as it doesn't exist" in caplog.text
