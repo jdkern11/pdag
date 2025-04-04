@@ -9,35 +9,34 @@ def add(x: int, y: int) -> int:
 
 
 def test_create_node():
-    n1 = pdag.Node('n1', add, 1, y=2)
+    n1 = pdag.Node("n1", add, 1, y=2)
     res = n1()
     assert res == 3
 
-    n2 = pdag.Node('n2', functools.partial(add, 1, 2))
+    n2 = pdag.Node("n2", functools.partial(add, 1, 2))
     res = n2()
     assert res == 3
 
     with pytest.raises(TypeError):
-        pdag.Node('err', add, 1, y=2, z=4)
+        pdag.Node("err", add, 1, y=2, z=4)
 
 
 def test_remove_edge(caplog):
     caplog.set_level(logging.INFO)
-    n1 = pdag.Node('n1', lambda: 1)
-    n2 = pdag.Node('n2', add, y=3)
-    n3 = pdag.Node('n3', add, y=3)
+    n1 = pdag.Node("n1", lambda: 1)
+    n2 = pdag.Node("n2", add, y=3)
+    n3 = pdag.Node("n3", add, y=3)
     dag = pdag.DAG()
     dag.remove_edge(n1, n2)
     assert "Can't remove edge as it doesn't exist" in caplog.text
     caplog.clear()
 
     dag.add_edge(n1, n2, "x")
-    assert len(dag.input_edges) == 2
-    assert len(dag.output_edges) == 2
+    assert len(dag.nodes) == 2
+    assert dag.graph.number_of_edges() == 1
     dag.remove_edge(n1, n2)
-    assert len(dag.input_edges) == 0
-    assert len(dag.output_edges) == 0
-    assert len(dag.node_inputs) == 0
+    assert len(dag.nodes) == 0
+    assert dag.graph.number_of_edges() == 0
 
     dag.add_edge(n1, n2, "x")
     dag.add_edge(n2, n3, "x")
@@ -48,8 +47,8 @@ def test_remove_edge(caplog):
 
 def test_add_edge(caplog):
     caplog.set_level(logging.INFO)
-    n1 = pdag.Node(lambda: 1)
-    n2 = pdag.Node(add, y=3)
+    n1 = pdag.Node("n1", lambda: 1)
+    n2 = pdag.Node("n2", add, y=3)
     dag = pdag.DAG()
     dag.add_edge(n1, n2, "x")
     assert "Edge already added" not in caplog.text
@@ -58,12 +57,9 @@ def test_add_edge(caplog):
 
 
 def test_edge_creates_cycle():
-    n1 = pdag.Node(add, y=3)
-    n1.node_alias = "n1"
-    n2 = pdag.Node(add, y=3)
-    n2.node_alias = "n2"
-    n3 = pdag.Node(add, y=3)
-    n2.node_alias = "n3"
+    n1 = pdag.Node("n1", add, y=3)
+    n2 = pdag.Node("n2", add, y=3)
+    n3 = pdag.Node("n3", add, y=3)
     dag = pdag.DAG()
     dag.add_edge(n1, n2, "x")
     with pytest.raises(ValueError):
@@ -71,6 +67,23 @@ def test_edge_creates_cycle():
     dag.add_edge(n2, n3, "x")
     with pytest.raises(ValueError):
         dag.add_edge(n3, n1, "x")
+
+
+def test_override(caplog):
+    n1 = pdag.Node("n1", lambda: 1)
+    n2 = pdag.Node("n2", add, y=3)
+    dag = pdag.DAG()
+    with pytest.raises(ValueError):
+        dag.add_edge(n1, n2, "y")
+    dag.add_edge(n1, n2, "x")
+    n3 = pdag.Node("n3", add, y=3)
+    with pytest.raises(ValueError):
+        dag.add_edge(n3, n2, "x")
+    dag.add_edge(n3, n2, "x", overwrite=True)
+    assert "Overwriting parameter x" in caplog.text
+    for edge in dag.graph.in_edges(n2.alias, data=True):
+        if edge[0] == n1.alias:
+            assert len(edge) == 2
 
 
 def test_param_is_valid():
@@ -92,5 +105,5 @@ def test_execute():
     dag.add_edge(n1, n2, "x")
     dag.add_edge(n2, n3, "x")
     dag.add_edge(n1, n3, "y")
-    outputs = dag.execute()
+    outputs = pdag.execute(dag)
     print(outputs)

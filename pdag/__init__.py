@@ -1,8 +1,7 @@
 from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic
-import networkx
+import networkx as nx
 import inspect
 import logging
-from collections import defaultdict, deque
 
 logger = logging.getLogger(__name__)
 P = ParamSpec("P")
@@ -10,7 +9,9 @@ R = TypeVar("R")
 
 
 class Node(Generic[R]):
-    def __init__(self, alias: str, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs):
+    def __init__(
+        self, alias: str, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ):
         _check_signature(func, args, kwargs)
         self.alias: str = alias
         self.func = func
@@ -26,7 +27,10 @@ class Node(Generic[R]):
         return self.alias
 
     def display(self) -> str:
-        rep = ", ".join(self.args + tuple((f"{k}={v}" for k, v in self.kwargs.items())))
+        args = tuple(f"{arg}" for arg in self.args) + tuple(
+            "{k}={v}" for k, v in self.kwargs.items()
+        )
+        rep = ", ".join(args)
         return f"{self.func.__name__}({rep})"
 
 
@@ -37,19 +41,20 @@ class Status(Generic[R], NamedTuple):
 
 class DAG:
     def __init__(self):
-        self.graph = nx.DiGraph()
+        self.graph: nx.DiGraph[str] = nx.DiGraph()
         self.nodes: dict[str, Node] = {}
 
-    def __repr__(self):
-        return str({str(k): [str(n) for n in v] for k, v in self.output_edges.items()})
-
-    def add_edge(self, from_: Node, to_: Node, param: str | None = None):
+    def add_edge(
+        self, from_: Node, to_: Node, param: str | None = None, overwrite: bool = False
+    ):
         """Add edge from node `from_` to node `to_`, filling param.
 
         Args:
             from_: Parent node.
             to_: Child node.
             param: Input parameter for the `to_` node.
+            overwrite: If True, will overwrite param if already input to the
+                to_ node.
 
         Raises:
             ValueError if a node's alias is the same as anothers in the graph,
@@ -62,11 +67,20 @@ class DAG:
             logger.info("Edge already added.")
             return
 
-        if self._edge_creates_cycle(from_, to_):
-            raise ValueError("This creates a cycle.")
-
         if param is not None and not _param_is_valid(to_.func, param):
             raise ValueError(f"{param} is an invalid parameter for {to_.func.__name__}")
+
+        if self._has_param_input(to_, param):
+            if overwrite:
+                logger.warning("Overwriting parameter %s for node %s", param, to_)
+            else:
+                raise ValueError(
+                    f"{param} is already added to the `to_` node. Pass `overwrite=True`"
+                    " if you're sure you wan't to overwrite it."
+                )
+
+        if self._edge_creates_cycle(from_, to_):
+            raise ValueError("This creates a cycle.")
 
         self._add_edge_unsafe(from_, to_, param)
 
@@ -74,74 +88,57 @@ class DAG:
         """Raises value error if node alias would overwrite another node"""
         a = node.alias
         if a in self.nodes and id(self.nodes[a]) != id(node):
-            raise ValueError(f"Alias of {node.display()} overwrites node {self.nodes[a].display()} in the graph")
-
-
-    def _edge_exists(self, from_: Node, to_: Node) -> bool:
-        return self.graph.has_edge(from_, to_)
-
-    def _add_edge_unsafe(self, from_: Node, to_: Node, param: str | None = None):
-        """If cycle and param checks aren't done, this is dangerous to do."""
-        self.output_edges[from_].add(to_)
-        self.input_edges[to_].add(from_)
-        if to_ not in self.output_edges:
-            self.output_edges[to_] = set()
-        if from_ not in self.input_edges:
-            self.input_edges[from_] = set()
-
-        if param in self.node_inputs[to_]:
-            logger.warning(f"%s already in %s. Overwriting.", param, to_)
-        self.node_inputs[to_][param] = from_
+            raise ValueError(
+                f"Alias of {node.display()} overwrites node "
+                f"{self.nodes[a].display()} in the graph"
+            )
 
     def remove_edge(self, from_: Node, to_: Node):
         if not self._edge_exists(from_, to_):
             logger.info("Can't remove edge as it doesn't exist.")
             return
-
         if not self._is_leaf_node(to_):
-            raise ValueError("Can't remove a non-leaf node.")
+            raise ValueError("Can't remove non-leaf node.")
+        self.graph.remove_edge(from_.alias, to_.alias)
+        self._remove_node_if_disjoint(from_)
+        self._remove_node_if_disjoint(to_)
 
-        self.output_edges[from_].remove(to_)
-        self.input_edges[to_].remove(from_)
-        self._remove_node_if_disconnected(to_)
-        self._remove_node_if_disconnected(from_)
+    def _is_leaf_node(self, node: Node) -> bool:
+        return self.graph.out_degree(node.alias) == 0
 
-    def _remove_node_if_disconnected(self, node: Node):
-        if self._disconnected_node(node):
-            self.input_edges.pop(node, None)
-            self.output_edges.pop(node, None)
-            self.node_inputs.pop(node, None)
+    def _remove_node_if_disjoint(self, node: Node):
+        if (
+            self.graph.in_degree(node.alias) == 0
+            and self.graph.out_degree(node.alias) == 0
+        ):
+            self.graph.remove_node(node.alias)
+            del self.nodes[node.alias]
 
-    def _disconnected_node(self, node: Node) -> bool:
-        return len(self.input_edges[node]) == 0 and len(self.output_edges[node]) == 0
+    def _edge_exists(self, from_: Node, to_: Node) -> bool:
+        return self.graph.has_edge(from_.alias, to_.alias)
 
-    def _is_leaf_node(self, node: Node):
-        return len(self.output_edges[node]) == 0
+    def _has_param_input(self, node: Node, param: str | None = None) -> bool:
+        if param is None:
+            return False
+        if param in node.kwargs:
+            return True
+        # returns from_, to_, parameters.
+        for edge in self.graph.in_edges(node.alias, data=True):
+            if edge[2]["param"] == param:
+                return True
+        return False
 
     def _edge_creates_cycle(self, from_: Node, to_: Node) -> bool:
-        if self.to_ not in self.nodes:
+        if to_.alias not in self.nodes or from_.alias not in self.nodes:
             return False
-        return to_ in nx.ancestors(self.graph, from_)
+        return to_.alias in nx.ancestors(self.graph, from_.alias)
 
-    def execute(self) -> dict[Node, Status]:
-        in_degree = defaultdict(int)
-        for node in self.input_edges:
-            in_degree[node] = len(self.input_edges[node])
-
-        queue = deque([node for node, degree in in_degree.items() if degree == 0])
-        while queue:
-            node = queue.popleft()
-            kwargs = {}
-            for param, ancestor in self.node_inputs[node].items():
-                kwargs[param] = self.node_outputs[ancestor].output
-            res = node(**kwargs)
-            self.node_outputs[node] = Status(errored=False, output=res)
-            for dependent in self.output_edges[node]:
-                in_degree[dependent] -= 1
-                if in_degree[dependent] == 0:
-                    queue.append(dependent)
-
-        return self.node_outputs
+    def _add_edge_unsafe(self, from_: Node, to_: Node, param: str | None = None):
+        """If cycle and param checks aren't done, this is dangerous because it could
+        result in a cycle or invalid input parameter.."""
+        self.graph.add_edge(from_.alias, to_.alias, param=param)
+        self.nodes[from_.alias] = from_
+        self.nodes[to_.alias] = to_
 
 
 def _param_is_valid(func: Callable, param: str) -> bool:
@@ -158,12 +155,12 @@ def _check_signature(func: Callable, args, kwargs):
 
 
 def _get_partial_signature(func, *args, **kwargs) -> inspect.Signature:
-        signature = inspect.signature(func)
-        bound_signature = signature.bind_partial(*args, **kwargs)
-        bound_signature.apply_defaults()
-        remaining_params = [
-            param for param in signature.parameters.values()
-            if param.name not in bound_signature.arguments
-        ]
-        return inspect.Signature(remaining_params)
-
+    signature = inspect.signature(func)
+    bound_signature = signature.bind_partial(*args, **kwargs)
+    bound_signature.apply_defaults()
+    remaining_params = [
+        param
+        for param in signature.parameters.values()
+        if param.name not in bound_signature.arguments
+    ]
+    return inspect.Signature(remaining_params)

@@ -9,12 +9,14 @@ packages = [{include = "pdag"}]
 [tool.poetry.dependencies]
 python = "^3.11"
 networkx = "^3.4.2"
+types-networkx = "^3.4.2.20250319"
 
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.15.0"
 black = "^25.1.0"
 pytest = "^8.3.5"
+ruff = "^0.11.3"
 
 [build-system]
 requires = ["poetry-core"]
