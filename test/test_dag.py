@@ -12,13 +12,14 @@ def test_create_node():
     n1 = pdag.Node("n1", add, 1, y=2)
     res = n1()
     assert res == 3
+    n2 = pdag.Node("n2", add, x=n1, y=3)
 
     n2 = pdag.Node("n2", functools.partial(add, 1, 2))
     res = n2()
     assert res == 3
 
     with pytest.raises(TypeError):
-        pdag.Node("err", add, 1, y=2, z=4)
+        pdag.Node("err", add, 1, y=2, z=4) # type: ignore
 
 
 def test_remove_edge(caplog):
@@ -83,7 +84,7 @@ def test_override(caplog):
     assert "Overwriting parameter x" in caplog.text
     for edge in dag.graph.in_edges(n2.alias, data=True):
         if edge[0] == n1.alias:
-            assert len(edge) == 2
+            assert len(edge[2]) == 0
 
 
 def test_param_is_valid():
@@ -95,15 +96,20 @@ def test_param_is_valid():
 
 
 def test_execute():
-    n1 = pdag.Node(add, 1, y=1)
-    n1.alias = "1"
-    n2 = pdag.Node(add, y=2)
-    n2.alias = "2"
-    n3 = pdag.Node(add)
-    n3.alias = "3"
+    n1 = pdag.Node("1", add, 1, y=1)
+    n2 = pdag.Node("2", add, y=2)
+    n3 = pdag.Node("3", add)
     dag = pdag.DAG()
     dag.add_edge(n1, n2, "x")
     dag.add_edge(n2, n3, "x")
     dag.add_edge(n1, n3, "y")
-    outputs = pdag.execute(dag)
-    print(outputs)
+    executor = pdag.Executor(dag)
+    outputs = executor.execute()
+    assert outputs["1"].output == 2
+    assert outputs["2"].output == 4
+    assert outputs["3"].output == 6
+
+    n1 = pdag.Node("1", add, 1, y=1)
+    n2 = pdag.Node("2", add, y=2)
+    dag = pdag.DAG()
+    dag.add_edge(n1, n2, "z")

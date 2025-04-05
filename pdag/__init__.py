@@ -1,11 +1,11 @@
-from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic
+from typing import NamedTuple, Callable, ParamSpec, TypeVar, Generic, Any
 import networkx as nx
 import inspect
 import logging
 
 logger = logging.getLogger(__name__)
 P = ParamSpec("P")
-R = TypeVar("R")
+R = TypeVar("R", bound=Any)
 
 
 class Node(Generic[R]):
@@ -13,30 +13,29 @@ class Node(Generic[R]):
         self, alias: str, func: Callable[P, R], *args: P.args, **kwargs: P.kwargs
     ):
         _check_signature(func, args, kwargs)
+        self.__signature__ = _get_partial_signature(func, *args, **kwargs)
         self.alias: str = alias
         self.func = func
         self.args = args
+        arg_names = func.__code__.co_varnames
+        if 'self' in arg_names:
+            raise ValueError("Not implemented for method calls.")
+        for arg, name in zip(args, arg_names):
+            kwargs[name] = arg
         self.kwargs = kwargs
-        self.__signature__ = _get_partial_signature(func, *args, **kwargs)
+
 
     def __call__(self, **kwargs) -> R:
         kwargs = {**self.kwargs, **kwargs}
-        return self.func(*self.args, **kwargs)
+        return self.func(*[], **kwargs)
 
     def __repr__(self):
         return self.alias
 
     def display(self) -> str:
-        args = tuple(f"{arg}" for arg in self.args) + tuple(
-            "{k}={v}" for k, v in self.kwargs.items()
-        )
+        args = ["{k}={v}" for k, v in self.kwargs.items()]
         rep = ", ".join(args)
         return f"{self.func.__name__}({rep})"
-
-
-class Status(Generic[R], NamedTuple):
-    errored: bool
-    output: R | None
 
 
 class DAG:
@@ -70,9 +69,15 @@ class DAG:
         if param is not None and not _param_is_valid(to_.func, param):
             raise ValueError(f"{param} is an invalid parameter for {to_.func.__name__}")
 
-        if self._has_param_input(to_, param):
+        param_input_node = self._get_param_input_node(to_, param)
+        if param_input_node is not None:
             if overwrite:
-                logger.warning("Overwriting parameter %s for node %s", param, to_)
+                logger.warning(
+                    "Overwriting parameter %s for node %s. The parameter's previous"
+                    " input was node %s and is now node %s", param, to_, param_input_node, from_
+                )
+                if param_input_node.alias != to_.alias:
+                    self._remove_param(param_input_node, to_)
             else:
                 raise ValueError(
                     f"{param} is already added to the `to_` node. Pass `overwrite=True`"
@@ -117,16 +122,19 @@ class DAG:
     def _edge_exists(self, from_: Node, to_: Node) -> bool:
         return self.graph.has_edge(from_.alias, to_.alias)
 
-    def _has_param_input(self, node: Node, param: str | None = None) -> bool:
+    def _get_param_input_node(self, node: Node, param: str | None = None) -> Node | None:
         if param is None:
-            return False
+            return None
+        # Parameter define in the node kwargs.
         if param in node.kwargs:
-            return True
-        # returns from_, to_, parameters.
+            return node
         for edge in self.graph.in_edges(node.alias, data=True):
             if edge[2]["param"] == param:
-                return True
-        return False
+                return self.nodes[edge[0]]
+        return None
+
+    def _remove_param(self, from_: Node, to_: Node):
+        del self.graph.edges[from_.alias, to_.alias]['param']
 
     def _edge_creates_cycle(self, from_: Node, to_: Node) -> bool:
         if to_.alias not in self.nodes or from_.alias not in self.nodes:
@@ -139,6 +147,48 @@ class DAG:
         self.graph.add_edge(from_.alias, to_.alias, param=param)
         self.nodes[from_.alias] = from_
         self.nodes[to_.alias] = to_
+
+    def has_node(self, node: Node):
+        a = node.alias
+        return a in self.nodes and id(self.nodes[a]) == id(node)
+
+class Status(Generic[R], NamedTuple):
+    errored: bool
+    output: R | None
+
+class Executor:
+
+    def __init__(self, dag: DAG):
+        self.dag = dag
+        self.result: dict[str, Status] = {}
+
+    def execute(self) -> dict[str, Status]:
+        graph = self.dag.graph
+        nodes = self.dag.nodes
+        order = nx.topological_sort(graph)
+        for alias in order:
+            node = nodes[alias]
+            self.execute_node(node, save=True)
+        return self.result
+
+    def execute_node(self, node: Node, save: bool)-> Status:
+        """Executes nodes function based on its input edges
+
+        node: Node within the executor's dag.
+        save: If True, saves to executor's result.
+        """
+        if not self.dag.has_node(node):
+            raise ValueError(f"{node} must exist within the excutor's dag.")
+        graph = self.dag.graph
+        kwargs = node.kwargs.copy()
+        edges = graph.in_edges(node.alias, data=True)
+        for edge in edges:
+            if 'param' in edge[2]:
+                kwargs[edge[2]['param']] = self.result[edge[0]].output
+        res = node(**kwargs)
+        status = Status(errored=False, output=res)
+        self.result[node.alias] = status
+        return status
 
 
 def _param_is_valid(func: Callable, param: str) -> bool:
